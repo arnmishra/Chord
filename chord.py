@@ -134,6 +134,7 @@ def print_from_conns(conn, nodes):
     show_all_nodes = Queue.PriorityQueue()
     while True:
         data = conn.recv(1024)
+        print(type(data))
         if(data == ""):
             continue
         else:
@@ -216,18 +217,20 @@ def start_node(port):
             #print "hi"
 
         elif(data == "show"): #show
-            #line = "N" + str(node_id) + "\n"
+            line = "N" + str(node_id) + "\n"
             temp = []
             for i in range(8):
                 temp.append(finger_table[i][0])
+            '''
             message_object = {
             'node_id': node_id,
             'finger_table' : temp,
             'keys': keys 
             }
             data_serialized = pickle.dumps(message_object, -1)  
-            #line +=  "FingerTable: " + str(temp) + "\n"
-            #line +=  "Keys: " + str(keys)
+            '''
+            line +=  "FingerTable: " + str(temp) + "\n"
+            line +=  "Keys: " + str(keys)
             client.sendall(data_serialized)
 
         elif(data.split()[0] == "find"): #find p k (i)
@@ -265,8 +268,6 @@ def start_node(port):
             #INIT Finger Table
             if(int(node_id) == 0):
                 finger_table = [[0, "self"] for x in range(8)]
-                #keys = 
-                
                 client.sendall("P0 Joined\n")
 
             else:
