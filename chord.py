@@ -5,9 +5,11 @@ import time
 import ast
 import Queue
 import pickle
-from threading import Lock,Thread
+from threading import Lock,Thread, Condition
 
 show_all_queue = Lock()
+cond = Condition()
+queue_mutex = Lock()
 def main(config):
     parts = parse_file(config)
 
@@ -33,11 +35,12 @@ def parse_file(config):
 def client(initial_port):
     global go
     global show_all
+    #print "the world has ended"
     show_all = False
     go = 1
-    nodes = {} # hash node_id to the socket
-
-    print_thread = Thread(target = start_printing, args=([8000 - 1, nodes])) #start printing from the client
+    global nodes # hash node_id to the socket
+    nodes = {}
+    print_thread = Thread(target = start_printing, args=([8000 - 1])) #start printing from the client
     #print "Created Start Print Thread"
     print_thread.daemon = True
     print_thread.start()
@@ -74,6 +77,9 @@ def client(initial_port):
             if(node_id in nodes):
                 print "Node already exists"
                 continue
+            if(int(node_id) > 255):
+                print "Node id must be less than 255"
+                continue
 
             port = int(node_id) + int(initial_port) #i.e. Node 18 is on port 8018
 
@@ -102,9 +108,8 @@ def client(initial_port):
 
             if(node_id == "all"):
                 for socket in nodes:
-                    nodes[socket].sendall("show\n") #send the key that is being searched for
+                    nodes[socket].sendall("show all\n") #send the key that is being searched for
                 #print "setting show_all"
-                show_all = True
             else:
                 if(node_id in nodes):
                     nodes[node_id].sendall("show\n") #send the key that is being searched for
@@ -115,8 +120,9 @@ def client(initial_port):
         else:
             print "Invalid message"
             go = 1
+        #print "write",show_all
 
-def start_printing(port, nodes):
+def start_printing(port):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("127.0.0.1", port))
@@ -124,43 +130,54 @@ def start_printing(port, nodes):
 
     while True:
         conn, addr = s.accept()
-        print_thread = Thread(target = print_from_conns, args= ([conn, nodes]))
+        print_thread = Thread(target = print_from_conns, args= ([conn]))
         #print "Created print thread"
         print_thread.daemon = True
         print_thread.start()
 
-def print_from_conns(conn, nodes):
+def print_from_conns(conn):
     global go, show_all, show_all_nodes
     show_all_nodes = Queue.PriorityQueue()
     while True:
-        data = conn.recv(1024)
-        print(type(data))
+        data = conn.recv(2048)
+        node_id = data.split('\n')[0][1:].strip()
+        if(len(data.split('\n')) == 4):
+            contains_all = data.split('\n')[3].strip()
+            if(contains_all == "all"):
+                contains_all = True
+        else:
+            contains_all = False
+        #print(node_id, contains_all)
         if(data == ""):
             continue
         else:
-            if "FingerTable:" not in data:
+            if "FingerTable:" not in data.strip():
                 data = data.replace('\n', '')
+                #print "The earth"
                 print(data)
             else:
-                if(show_all):
+                if(contains_all == True):
                     message = data.split('\n')
-                    node_id = int((message[0][1:]).strip())
-                    print(node_id)
+                    data = message[0] + '\n' + message[1] + '\n' + message[2]
+                    node_id = int(node_id)
                     show_all_nodes.put((node_id, data))
+                    #print(str(node_id) + '\n')
                     if(show_all_nodes.qsize() == len(nodes)):
-                        #show_all_nodes = collections.OrderedDict(sorted(show_all_nodes.items())) #Sort the nodes in increasing order
-                        #print(show_all_nodes.qsize())
-                        #print(show_all_nodes)
+                        cond.acquire()
+                        cond.notify()
+                        cond.release()
+                    if(node_id == 0):
+                        cond.acquire()
+                        while(show_all_nodes.qsize() != len(nodes)):
+                            cond.wait()
+                        cond.release()
                         while(show_all_nodes.qsize() != 0):
-                            #show_all_queue.acquire()
-                            item = show_all_nodes.get()
-                            #show_all_queue.release()
-                            time.sleep(1)
-                            print(item[1][:-1])
-                        #show_all_nodes = Queue.PriorityQueue()
-                        show_all = False
+                            print(show_all_nodes.get()[1])
+                            i=0
+                else:
+                    print(data)
+         
             go = 1
-
 
 def get_socket(port, finger_table):
     '''
@@ -216,25 +233,18 @@ def start_node(port):
             client.sendall("P" + str(node_id) + " Crashed\n")
             #print "hi"
 
-        elif(data == "show"): #show
+        elif("show" in data): #show
             line = "N" + str(node_id) + "\n"
             temp = []
             for i in range(8):
                 temp.append(finger_table[i][0])
-            '''
-            message_object = {
-            'node_id': node_id,
-            'finger_table' : temp,
-            'keys': keys 
-            }
-            data_serialized = pickle.dumps(message_object, -1)  
-            '''
             line +=  "FingerTable: " + str(temp) + "\n"
             line +=  "Keys: " + str(keys)
-            client.sendall(data_serialized)
+            if("all" in data):
+                line += "\nall"
+            client.sendall(line)
 
         elif(data.split()[0] == "find"): #find p k (i)
-            #print data
             key = int(data.split()[2])
             if key in keys:
                 if(len(data.split()) == 3): # For a regular find operation
@@ -299,7 +309,7 @@ def start_node(port):
                 count = 0
                 #print finger
                 #print i
-                port = 8000 + (key - 2**i)
+                port = 8000 + (key - 2**i) % 255
                 #print port
                 sock = get_socket(port, finger_table)
                 sock.sendall(str(new_table) + "\n")
@@ -357,6 +367,8 @@ def find(value, finger_table, node_id):
             continue
         elif successor and finger_table[i][0] >= value and node_id < value: #the successor is the node you are looking for because the value is between this node and the successor
             finger = finger_table[i] #return successor's id and socket if it is the chosen one
+            sent = 1
+            break
         if finger_table[i][0] > value:
             sent = 1
             finger = finger_table[i-1] #return the largest node that is smaller than the value
@@ -365,6 +377,8 @@ def find(value, finger_table, node_id):
         finger = finger_table[i] #if none of them are greater, then just jump to the last node in the table because thats the closest one
     #if finger[1] == "self" and finger[0] != node_id:
     #    finger[1] = get_socket(int(finger[0] + 8000))
+    #print "node_id", node_id
+    #print "value", value
     return finger
 
 def start_accepting(s, q):
