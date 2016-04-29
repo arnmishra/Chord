@@ -5,6 +5,7 @@ import time
 import ast
 import Queue
 import pickle
+import copy
 from threading import Lock,Thread, Condition
 
 show_all_queue = Lock()
@@ -40,7 +41,7 @@ def client(initial_port):
     go = 1
     global nodes # hash node_id to the socket
     nodes = {}
-    print_thread = Thread(target = start_printing, args=([8000 - 1])) #start printing from the client
+    print_thread = Thread(target = start_printing, args=([5000 - 1])) #start printing from the client
     #print "Created Start Print Thread"
     print_thread.daemon = True
     print_thread.start()
@@ -50,11 +51,11 @@ def client(initial_port):
     #print "Created Node Thread"
     node_thread.daemon = True
     node_thread.start()
-    nodes['0'] = get_socket(port, False)
-    while (not nodes['0']):
-        nodes['0'] = get_socket(port, False) # Continue trying to connect till it connects
+    nodes[0] = get_socket(port, False)
+    while (not nodes[0]):
+        nodes[0] = get_socket(port, False) # Continue trying to connect till it connects
     #nodes['0'].sendall(get_fingers('0', nodes))
-    nodes['0'].sendall("join\n")
+    nodes[0].sendall("join\n")
 
     while True:
         while not go:
@@ -66,6 +67,8 @@ def client(initial_port):
         command = message.split()[0]
         try:
             node_id = message.split()[1] #i.e. Node "18"
+            if(node_id != "all"):
+                node_id = int(node_id)
         except:
             print "Invalid message"
             go = 1
@@ -91,7 +94,9 @@ def client(initial_port):
             nodes[node_id] = get_socket(port, False)
             while (not nodes[node_id]):
                 nodes[node_id] = get_socket(port, False) # Continue trying to connect till it connects
+            #print(nodes.items())
             nodes = collections.OrderedDict(sorted(nodes.items())) #Sort the nodes in increasing order
+            #print(nodes.items())
             #nodes[node_id].sendall(get_fingers(node_id, nodes))
             nodes[node_id].sendall("join\n")
             
@@ -107,8 +112,13 @@ def client(initial_port):
         elif command == "show": #show p
 
             if(node_id == "all"):
+                nodes = collections.OrderedDict(sorted(nodes.items()))
                 for socket in nodes:
                     nodes[socket].sendall("show all\n") #send the key that is being searched for
+                    #with cond:
+                    cond.acquire()
+                    cond.wait()
+                    cond.release()
                 #print "setting show_all"
             else:
                 if(node_id in nodes):
@@ -139,10 +149,10 @@ def print_from_conns(conn):
     global go, show_all, show_all_nodes
     show_all_nodes = Queue.PriorityQueue()
     while True:
-        data = conn.recv(2048)
+        data = conn.recv(4096)
         node_id = data.split('\n')[0][1:].strip()
-        if(len(data.split('\n')) == 4):
-            contains_all = data.split('\n')[3].strip()
+        if(len(data.split('\n')) == 5):
+            contains_all = data.split('\n')[4].strip()
             if(contains_all == "all"):
                 contains_all = True
         else:
@@ -158,23 +168,16 @@ def print_from_conns(conn):
             else:
                 if(contains_all == True):
                     message = data.split('\n')
-                    data = message[0] + '\n' + message[1] + '\n' + message[2]
-                    node_id = int(node_id)
-                    show_all_nodes.put((node_id, data))
-                    #print(str(node_id) + '\n')
-                    if(show_all_nodes.qsize() == len(nodes)):
-                        cond.acquire()
-                        cond.notify()
-                        cond.release()
-                    if(node_id == 0):
-                        cond.acquire()
-                        while(show_all_nodes.qsize() != len(nodes)):
-                            cond.wait()
-                        cond.release()
-                        while(show_all_nodes.qsize() != 0):
-                            print(show_all_nodes.get()[1])
-                            i=0
+                    data = message[1] + '\n' + message[2] + '\n' + message[3]
+                    print("========Node " + message[0] + "======== ")
+                    print(data)
+                    print("\n")
+                    #print("here ddfd")
+                    cond.acquire()
+                    cond.notifyAll()
+                    cond.release()
                 else:
+                    #i = 0
                     print(data)
          
             go = 1
@@ -183,7 +186,7 @@ def get_socket(port, finger_table):
     '''
     if finger_table:
         for i in range(8):
-            if finger_table[i][0] == port-8000 and finger_table[i][1] != "self":
+            if finger_table[i][0] == port-5000 and finger_table[i][1] != "self":
                 return finger_table[i][1] #if the socket has already been made, return
     '''
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -198,17 +201,19 @@ def get_socket(port, finger_table):
 
 def start_node(port):
     keys = [] #list of all keys in this node
-    predecessor_keys = [] #list of all keys in the predecessor's node
+     #list of all keys in the predecessor's node
     new_table = [0 for x in range(8)] #maps node_ids to sockets
+    hello = 5
     predecessor_id = 0
     count = 0
 
-    if(port == 8000):
+    if(port == 5000):
         keys = [x for x in range(256)]
+        predecessor_keys = [x for x in range(256)]
 
-    client = get_socket(8000 - 1, False) # get socket to client
+    client = get_socket(5000 - 1, False) # get socket to client
     while not client:
-        client = get_socket(8000 - 1, False)
+        client = get_socket(5000 - 1, False)
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -222,26 +227,57 @@ def start_node(port):
     #print "started accept thread for ", port
     accept_thread.start()
 
-    node_id = port - 8000
+    node_id = port - 5000
 
     while True:
-
+        #print "at the top"
+        #print(predecessor_keys)
+        #print(hello)
         data = q.get()
 
-        if(data == "crash"): #crash
+        if(data.split()[0] == "predecessor"): #predecessor predecessor_id
+            #print data
+            predecessor_id = int(data.split()[1])
+            #print(predecessor_id)
+            #print(data.split()[2:])
+            #predecessor_keys = []
+            #print(data)
+            for i in range(2,len(data.split())):
+                predecessor_keys.append(int(data.split()[i]))
+            #print("hello")
+            #print(temp_keys)
+            #for val in temp_keys:
+            #   predecessor_keys.append(str(val))
+            #print(predecessor_keys)
+            #print("bye")
+                #predecessor_keys.append(int(data.split()[i]))
+            #predecessor_keys = copy.deepcopy(temp_keys)
+            #print("set predecssor keys")
+            hello = 10
+            #print predecessor_keys
+            #predecessor_keys = ast.literal_eval(data.split()[2:])
+            #for i in range(len(predecessor_keys)):
+            #    predecessor_keys[i] = int(keys[i])
+
+        elif(data == "crash"): #crash
             #CRASH THE NODE
             client.sendall("P" + str(node_id) + " Crashed\n")
             #print "hi"
 
         elif("show" in data): #show
+            #print("already set keys")
+            #print(predecessor_keys)
             line = "N" + str(node_id) + "\n"
             temp = []
             for i in range(8):
                 temp.append(finger_table[i][0])
             line +=  "FingerTable: " + str(temp) + "\n"
-            line +=  "Keys: " + str(keys)
+            line +=  "Keys: " + str(keys) + "\n"
+            #print(predecessor_keys)
+            line += "predecessor_keys: " + str(predecessor_keys)
             if("all" in data):
                 line += "\nall"
+            #print("sent show from " + str(node_id))
             client.sendall(line)
 
         elif(data.split()[0] == "find"): #find p k (i)
@@ -250,7 +286,7 @@ def start_node(port):
                 if(len(data.split()) == 3): # For a regular find operation
                     client.sendall(str(node_id) + "\n")
                 else: # For a finger table initialization find function (using i)
-                     sock = get_socket(8000, finger_table)
+                     sock = get_socket(5000, finger_table)
                      string = "combine " + data.split()[3] + " " + str(node_id) + " " + str(key) #sends i, i'th member of finger table, and key
                      sock.sendall(string + "\n")
             else:
@@ -264,15 +300,18 @@ def start_node(port):
             #print "node: " + str(node_id) + " is being updated with " + data.split()[1]
             if(new_finger != node_id):
                 finger_table = update_fingers(node_id, new_finger, finger_table)
-            
+            if(finger_table[0][0] == new_finger):
+                send_keys = ""
+                for i in range(len(keys)):
+                    send_keys += str(keys[i]) + " "
+                #send_keys += "]"
+                #print(send_keys)
+                finger_table[0][1].sendall("predecessor " + str(node_id) + " " + send_keys)
             keys = set_keys(predecessor_id, node_id)
 
         elif(data.split()[0] == "keys"): #keys predecessor_id
             predecessor_id = int(data.split()[1])
             keys = set_keys(predecessor_id, node_id)
-
-        elif(data.split()[0] == "predecessor"): #predecessor predecessor_id
-            predecessor_id = int(data.split()[1])
 
         elif(data.split()[0] == "join"): #join
             #INIT Finger Table
@@ -281,7 +320,7 @@ def start_node(port):
                 client.sendall("P0 Joined\n")
 
             else:
-                sock = get_socket(8000, False)
+                sock = get_socket(5000, False)
                 sock.sendall("init " + str(node_id) + "\n")
 
         elif(data.split()[0] == "init"): #init p
@@ -294,7 +333,7 @@ def start_node(port):
                 string = "find " + str(finger_table[0][0]) + " " + str(val) + " " + str(i)
                 sock = finger_table[0][1]
                 if(sock == "self"):
-                    sock = get_socket(8000, finger_table)
+                    sock = get_socket(5000, finger_table)
                 sock.sendall(string + "\n")
 
         elif(data.split()[0] == "combine"): #initializing finger table, combine index i'th finger key
@@ -309,11 +348,13 @@ def start_node(port):
                 count = 0
                 #print finger
                 #print i
-                port = 8000 + (key - 2**i) % 255
+                port = 5000 + (key - 2**i) % 255
                 #print port
                 sock = get_socket(port, finger_table)
                 sock.sendall(str(new_table) + "\n")
         else:
+            #rint data
+            predecessor_keys = []
             finger_table = ast.literal_eval(data)
             #print finger_table
             successor = 1
@@ -330,7 +371,7 @@ def start_node(port):
 
                 else:
                     if finger_table[i] != prev:
-                        s = get_socket(int(finger_table[i]) + 8000, finger_table)
+                        s = get_socket(int(finger_table[i]) + 5000, finger_table)
                     if not s:
                         print "Could not connect to " + str(finger_table[i])
                     
@@ -341,8 +382,11 @@ def start_node(port):
                         successor = 0
 
                 prev = finger_table[i][0]
-
+            
             client.sendall("P" + str(node_id) + " Joined" + "\n")
+        #print("at the bottom")
+        #print(predecessor_keys)
+        #print(hello)
 
 def set_keys(predecessor_id, node_id):
     if(predecessor_id > node_id):
@@ -376,7 +420,7 @@ def find(value, finger_table, node_id):
     if not sent:
         finger = finger_table[i] #if none of them are greater, then just jump to the last node in the table because thats the closest one
     #if finger[1] == "self" and finger[0] != node_id:
-    #    finger[1] = get_socket(int(finger[0] + 8000))
+    #    finger[1] = get_socket(int(finger[0] + 5000))
     #print "node_id", node_id
     #print "value", value
     return finger
@@ -392,7 +436,7 @@ def start_accepting(s, q):
 
 def read_from_conns(conn, q):
     while True:
-        data = conn.recv(1024)
+        data = conn.recv(4096)
         commands = data.split("\n")
         for command in commands:
 
@@ -417,16 +461,16 @@ def update_fingers(node_id, new_finger, finger_table):
             finger_table[i][0] = new_finger
 
             if not s:
-                s = get_socket(new_finger + 8000, finger_table)
+                s = get_socket(new_finger + 5000, finger_table)
                 if not s:
                     print "Could not connect to " + str(new_finger)
 
             finger_table[i][1] = s
 
         if(finger_table[i][0] != node_id and successor):
-            if finger_table[len(finger_table)-1][0] == new_finger:
-                finger_table[len(finger_table)-1][1].sendall("predecessor " + str(node_id) + "\n")
-            elif new_finger != node_id:
+            #if finger_table[len(finger_table)-1][0] == new_finger:
+                #finger_table[len(finger_table)-1][1].sendall("predecessor " + str(node_id) + "\n")
+            if new_finger != node_id:
                 finger_table[i][1].sendall("finger " + str(new_finger) + " keys " + str(node_id) + "\n") # Send the finger and key flags to the successor (assuming its not the original node)
             successor = 0
     return finger_table
