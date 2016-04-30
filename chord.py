@@ -260,15 +260,28 @@ def start_node(port):
         #print(hello)
         data = q.get()
 
-        if(data.split()[0] == "predecessor"): #predecessor predecessor_id
+        if(data.split()[0] == "predecessor"): #predecessor predecessor_id (crash old_id initial_id) send_keys<-- if coming from the crash process
+            #print data
+            old_id = -1
+            predecessor_id = int(data.split('\r')[1])
+            if(data.split('\r')[2] == "crash"):
+                old_id = int(data.split('\r')[3])
+                initial_id = int(data.split('\r')[4])
+                a = 4
+            else:
+                a = 2
+            #print data
             #print("setting pred keys for ", node_id)
             #print predecessor_keys
+            #print len(data.split())
             predecessor_keys = []
-            for i in range(2,len(data.split())):
+            for i in range(a,len(data.split())):
                 predecessor_keys.append(int(data.split()[i]))
             sock = get_socket(5000 + predecessor_id, finger_table)
             #print(predecessor_keys)
             sock.sendall("super_successor " + str(finger_table[0][0]) + '\n')
+            if old_id != -1:
+                fix_table(initial_id, finger_table, node_id, old_id)
 
         elif(data.split()[0] == "super_successor"): #super_successor id
             super_successor = data.split()[1]
@@ -306,15 +319,19 @@ def start_node(port):
             #print("sent show from " + str(node_id))
             client.sendall(line)
 
-        elif(data.split()[0] == "find"): #find p k (i)
+        elif(data.split()[0] == "find"): #find p k (i) (original_id)
             key = int(data.split()[2])
             if key in keys:
                 if(len(data.split()) == 3): # For a regular find operation
                     client.sendall(str(node_id) + "\n")
-                else: # For a finger table initialization find function (using i)
-                     sock = get_socket(5000, finger_table)
-                     string = "combine " + data.split()[3] + " " + str(node_id) + " " + str(key) #sends i, i'th member of finger table, and key
-                     sock.sendall(string + "\n")
+                elif(len(data.split()) == 4): # For a finger table initialization find function (using i)
+                    sock = get_socket(5000, finger_table)
+                    string = "combine " + data.split()[3] + " " + str(node_id) + " " + str(key) #sends i, i'th member of finger table, and key
+                    sock.sendall(string + "\n")
+                else: # For finding a new node after a crash (using i and original_id)
+                    print data.split()
+                    sock = get_socket(int(data.split()[4]) + 5000, finger_table)
+                    sock.sendall("combine " + data.split()[3] + " " + str(node_id) + " crash\n")
             else:
                 found = find(key, finger_table, node_id)
                 found[1].sendall(data + '\n')
@@ -364,28 +381,32 @@ def start_node(port):
             search_id = int(data.split()[1])
             for i in range(8):
                 val = (search_id + 2**i) % 255
-                string = "find " + str(finger_table[0][0]) + " " + str(val) + " " + str(i)
+                string = "find " + str(finger_table[0][0]) + " " + str(val) + " " + str(i) + '\n'
                 sock = finger_table[0][1]
                 if(sock == "self"):
                     sock = get_socket(5000, finger_table)
                 sock.sendall(string + "\n")
 
-        elif(data.split()[0] == "combine"): #initializing finger table, combine index i'th finger key
+        elif(data.split()[0] == "combine"): #initializing finger table, combine index i'th_finger_key; or updating finger table for crashed node
             #print data
             #print node_id
             i = int(data.split()[1])
             finger = data.split()[2]
-            key = int(data.split()[3])
-            new_table[i] = finger
-            count += 1
-            if count == 8:
-                count = 0
-                #print finger
-                #print i
-                port = 5000 + (key - 2**i) % 255
-                #print port
-                sock = get_socket(port, finger_table)
-                sock.sendall(str(new_table) + "\n")
+            key = data.split()[3]
+            if(key == "crash"): #combine index crash
+                finger_table[i][0] = int(finger)
+                finger_table[i][1] = get_socket(int(finger) + 5000, False)
+            else:
+                new_table[i] = finger
+                count += 1
+                if count == 8:
+                    count = 0
+                    #print finger
+                    #print i
+                    port = 5000 + (int(key) - 2**i) % 255
+                    #print port
+                    sock = get_socket(port, finger_table)
+                    sock.sendall(str(new_table) + "\n")
 
         elif(data == "change successor"):
             #print finger_table[0]
@@ -402,6 +423,9 @@ def start_node(port):
             finger_table[0][1].sendall("concatenate " + str(node_id) + " " + str(old_id) + " " + send_keys)
             sock = get_socket(predecessor_id + 5000, finger_table)
             sock.sendall("super_successor " + str(finger_table[0][0]))
+            #finger_table[0][1].sendall()
+
+        #elif(data.split()[0] == )
 
 
         elif(data.split()[0] == "concatenate"):
@@ -409,11 +433,8 @@ def start_node(port):
             keys.sort()
             predecessor_id = int(data.split()[1])
             old_id = int(data.split()[2])
-            for finger in finger_table:
-                if finger[0] == old_id:
-                    finger[0] = int(super_successor)
-                    finger[1].close()
-                    finger[1] = sock
+            print "fix it pls"
+            fix_table(predecessor_id, finger_table, node_id, old_id) #fixes this nodes table to remove the old id
             predecessor_keys = []
             for i in range(3,len(data.split())):
                 predecessor_keys.append(int(data.split()[i]))
@@ -422,11 +443,11 @@ def start_node(port):
             send_keys = ""
             for i in range(len(keys)):
                 send_keys += str(keys[i]) + " "
-            finger_table[0][1].sendall("predecessor " + str(predecessor_id) + " " + send_keys)
+            finger_table[0][1].sendall("predecessor\r" + str(predecessor_id) + "\rcrash\r" + str(old_id) + "\r" + str(predecessor_id) + "\r" + send_keys)
 
 
         else:
-            #rint data
+            #print data
             predecessor_keys = []
             finger_table = ast.literal_eval(data)
             #print finger_table
@@ -467,6 +488,20 @@ def start_node(port):
         #print("at the bottom")
         #print(predecessor_keys)
         #print(hello)
+
+def fix_table(initial_id, finger_table, node_id, old_id):
+    print initial_id
+    print node_id
+    print old_id
+    if node_id != initial_id:
+        for i in range(8):
+            if finger_table[i][0] == old_id: #need to fix this finger
+                key = (node_id + 2**i) % 255
+                if(i == 0):
+                    finger_table[7][1].sendall("find " + str(finger_table[i][0]) + " " + str(key) + " " + str(i) + " " + str(node_id) + "\n")
+                else:
+                    print finger_table[i+1]
+                    finger_table[i-1][1].sendall("find " + str(finger_table[i+1][0]) + " " + str(key) + " " + str(i) + " " + str(node_id) + "\n")
 
 #Send heartbeats to successor
 def send_heartbeats(successor, node_id):
@@ -520,7 +555,7 @@ def set_keys(finger_table, predecessor_id, node_id):
     send_keys = ""
     for i in range(len(keys)):
         send_keys += str(keys[i]) + " "
-    finger_table[0][1].sendall("predecessor " + str(node_id) + " " + send_keys)
+    finger_table[0][1].sendall("predecessor\r" + str(node_id) + "\r" + send_keys)
     return keys
 
 def find(value, finger_table, node_id):
