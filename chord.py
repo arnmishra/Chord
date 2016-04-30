@@ -10,7 +10,9 @@ from threading import Lock,Thread, Condition
 
 show_all_queue = Lock()
 cond = Condition()
+cond2 = Condition()
 queue_mutex = Lock()
+nodes_lock = Lock()
 def main(config):
     parts = parse_file(config)
 
@@ -21,7 +23,8 @@ def main(config):
     #print "Created Client Thread"
     client_thread.daemon = True
     client_thread.start()
-
+    global num_nodes
+    num_nodes = 0
     while True:
         time.sleep(1)
 
@@ -98,6 +101,7 @@ def client(initial_port):
             nodes = collections.OrderedDict(sorted(nodes.items())) #Sort the nodes in increasing order
             #print(nodes.items())
             #nodes[node_id].sendall(get_fingers(node_id, nodes))
+            #print("sending join")
             nodes[node_id].sendall("join\n")
             
         elif command == "find": #find p k
@@ -194,15 +198,16 @@ def get_socket(port, finger_table):
     try:
         #print "Connecting to Port", port
         s.connect(("127.0.0.1", int(port)))
-
         return s
     except:
         return False
 
 def start_node(port):
+    global num_nodes
     keys = [] #list of all keys in this node
      #list of all keys in the predecessor's node
     new_table = [0 for x in range(8)] #maps node_ids to sockets
+    conns = []
     hello = 5
     predecessor_id = 0
     count = 0
@@ -217,17 +222,18 @@ def start_node(port):
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    #print(port)
     s.bind(("127.0.0.1", port))
     s.listen(33) #up to 31 connections from other nodes, 1 from client, and 1 extra to be safe
     q = Queue.Queue()
 
-    accept_thread = Thread(target = start_accepting, args= (s, q))
+    node_id = port - 5000
+
+    accept_thread = Thread(target = start_accepting, args= (s, q, node_id, conns))
     #print "Created accept thread"
     accept_thread.daemon = True
     #print "started accept thread for ", port
     accept_thread.start()
-
-    node_id = port - 5000
 
     while True:
         #print "at the top"
@@ -236,31 +242,25 @@ def start_node(port):
         data = q.get()
 
         if(data.split()[0] == "predecessor"): #predecessor predecessor_id
-            #print data
-            predecessor_id = int(data.split()[1])
-            #print(predecessor_id)
-            #print(data.split()[2:])
-            #predecessor_keys = []
-            #print(data)
+            #print("setting pred keys for ", node_id)
+            #print predecessor_keys
+            predecessor_keys = []
             for i in range(2,len(data.split())):
                 predecessor_keys.append(int(data.split()[i]))
-            #print("hello")
-            #print(temp_keys)
-            #for val in temp_keys:
-            #   predecessor_keys.append(str(val))
             #print(predecessor_keys)
-            #print("bye")
-                #predecessor_keys.append(int(data.split()[i]))
-            #predecessor_keys = copy.deepcopy(temp_keys)
-            #print("set predecssor keys")
-            hello = 10
-            #print predecessor_keys
-            #predecessor_keys = ast.literal_eval(data.split()[2:])
-            #for i in range(len(predecessor_keys)):
-            #    predecessor_keys[i] = int(keys[i])
 
         elif(data == "crash"): #crash
             #CRASH THE NODE
+            #found = find(node_id - 1, finger_table, node_id)
+            #print(found[0], found[1])
+            for finger in finger_table:
+                try:
+                    finger[1].shutdown(socket.SHUT_RDWR)
+                    finger[1].close()
+                except:
+                    i = 0
+            for conn in conns:
+               conn.close()
             client.sendall("P" + str(node_id) + " Crashed\n")
             #print "hi"
 
@@ -294,30 +294,37 @@ def start_node(port):
                 found[1].sendall(data + '\n')
 
         elif(data.split()[0] == "finger"): #finger new_finger keys predecessor_id
+            #print node_id
             #print data
             predecessor_id = int(data.split()[3])
             new_finger = int(data.split()[1])
             #print "node: " + str(node_id) + " is being updated with " + data.split()[1]
             if(new_finger != node_id):
                 finger_table = update_fingers(node_id, new_finger, finger_table)
-            if(finger_table[0][0] == new_finger):
-                send_keys = ""
-                for i in range(len(keys)):
-                    send_keys += str(keys[i]) + " "
+            #if(finger_table[0][0] == new_finger):
+            #send_keys = ""
+            #for i in range(len(keys)):
+            #    send_keys += str(keys[i]) + " "
                 #send_keys += "]"
                 #print(send_keys)
-                finger_table[0][1].sendall("predecessor " + str(node_id) + " " + send_keys)
-            keys = set_keys(predecessor_id, node_id)
+            #finger_table[0][1].sendall("predecessor " + str(node_id) + " " + send_keys)
+            keys = set_keys(finger_table, predecessor_id, node_id)
 
         elif(data.split()[0] == "keys"): #keys predecessor_id
             predecessor_id = int(data.split()[1])
-            keys = set_keys(predecessor_id, node_id)
+            keys = set_keys(finger_table, predecessor_id, node_id)
 
         elif(data.split()[0] == "join"): #join
             #INIT Finger Table
             if(int(node_id) == 0):
+                nodes_lock.acquire()
+                num_nodes += 1
+                nodes_lock.release()
                 finger_table = [[0, "self"] for x in range(8)]
                 client.sendall("P0 Joined\n")
+                heartbeat_thread = Thread(target=send_heartbeats, args=(finger_table, node_id))
+                heartbeat_thread.daemon = True
+                heartbeat_thread.start()
 
             else:
                 sock = get_socket(5000, False)
@@ -383,12 +390,58 @@ def start_node(port):
 
                 prev = finger_table[i][0]
             
+            cond2.acquire()
+            cond2.notifyAll()
+            cond2.release()
             client.sendall("P" + str(node_id) + " Joined" + "\n")
+            #Start heartbeat messages
+            heartbeat_thread = Thread(target=send_heartbeats, args=(finger_table, node_id))
+            heartbeat_thread.daemon = True
+            heartbeat_thread.start()
         #print("at the bottom")
         #print(predecessor_keys)
         #print(hello)
 
-def set_keys(predecessor_id, node_id):
+#Send heartbeats to successor
+def send_heartbeats(finger_table, node_id):
+    if(num_nodes <= 1):
+        with cond2:
+            cond2.wait()
+    finger_table[0][1].settimeout(5)
+    time_t = str(time.time())
+    time.sleep(2.5)
+    finger_table[0][1].sendall("heartbeat message start " + time_t + " " + str(node_id))
+    while True:
+        if node_id == 0:
+            print finger_table[0][0]
+        #print("Node joined - heartbeating started")
+        try:
+            try:
+                data = finger_table[0][1].recv(1024)
+            except:
+                print("NODE CRASHED 1")
+                return
+            if("end heartbeat" in data):
+                print(str(node_id) + " finished heartbeat to " + str(finger_table[0][0]))
+                #STRING IS 0 -> end 1-> heartbeat 2-> time initially sent from predecssor 3-> time received by successor
+                time_sent_precessor = float(data.split()[2])
+                time_sent_successor = float(data.split()[3])
+                #print(int(time_sent_successor - time_sent_precessor))
+                #if(int(time_sent_successor - time_sent_precessor) == 5):
+                time_t = str(time.time())
+                time.sleep(2.5)
+                try:
+                    finger_table[0][1].sendall("heartbeat message start " + time_t + " " + str(node_id))
+                except:
+                    return
+        except socket.timeout, e:
+            err = e.args[0]
+            if(err == 'timed out'):
+                print("NODE CRASHED 2")
+                #DO A LOTTA SHIT
+                i = 0
+
+def set_keys(finger_table, predecessor_id, node_id):
     if(predecessor_id > node_id):
         keys = [x for x in range(0, node_id + 1)]
         keys += (x for x in range(predecessor_id + 1, 256))
@@ -396,7 +449,10 @@ def set_keys(predecessor_id, node_id):
         keys = [x for x in range(predecessor_id + 1, node_id + 1)]
     else:
         print "Setting Incorrect Keys" #Should never print
-
+    send_keys = ""
+    for i in range(len(keys)):
+        send_keys += str(keys[i]) + " "
+    finger_table[0][1].sendall("predecessor " + str(node_id) + " " + send_keys)
     return keys
 
 def find(value, finger_table, node_id):
@@ -425,29 +481,47 @@ def find(value, finger_table, node_id):
     #print "value", value
     return finger
 
-def start_accepting(s, q):
+def start_accepting(s, q, node_id, conns):
     while True:
         conn, addr = s.accept()
-        read_thread = Thread(target = read_from_conns, args= (conn, q))
+        conns.append(conn)
+        read_thread = Thread(target = read_from_conns, args= (conn, q, node_id))
         #print "Created read thread"
         read_thread.daemon = True
         #print "started read thread for "
         read_thread.start()
 
-def read_from_conns(conn, q):
+def read_from_conns(conn, q, node_id):
     while True:
-        data = conn.recv(4096)
-        commands = data.split("\n")
-        for command in commands:
+        #Goes into except if node crashes and connection is closed
+        try:
+            data = conn.recv(4096)
+        except:
+            print("NODE CRASHED - " + str(node_id))
+            num_nodes -= 1
+            return
+        if("heartbeat" in data):
+            i = 0
+            if("start" in data):
+                #print(str(node_id) + " received heartbeat from " + data.split()[4])
+                time.sleep(2.5)
+                time_received = data.split()[3]
+                #print(str(node_id) + " sent heartbeat back to " + data.split()[4])
+                try:
+                    conn.sendall("end heartbeat " + str(time_received) + " " + str(time.time()))
+                except:
+                    return
+            continue
+        else:
+            commands = data.split("\n")
+            for command in commands:
 
-            #print "Data:",data
+                if(command == ""):
+                    continue
 
-            if(command == ""):
-                continue
-
-            else:
-                #print "Data:",command[:1]
-                q.put(command)
+                else:
+                    #print "Data:",command[:1]
+                    q.put(command)
 
 def update_fingers(node_id, new_finger, finger_table):
     #print "id",node_id
