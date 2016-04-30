@@ -8,6 +8,12 @@ import pickle
 import copy
 from threading import Lock,Thread, Condition
 
+'''
+Change the code to include finger table update implementation.
+Send from concatenate to predecessor to find each node and build the finger table the normal way
+Add a flag to update finger tables to make a removal node too 
+'''
+
 show_all_queue = Lock()
 cond = Condition()
 cond2 = Condition()
@@ -162,8 +168,8 @@ def print_from_conns(conn):
     while True:
         data = conn.recv(4096)
         node_id = data.split('\n')[0][1:].strip()
-        if(len(data.split('\n')) == 5):
-            contains_all = data.split('\n')[4].strip()
+        if(len(data.split('\n')) == 7):
+            contains_all = data.split('\n')[6].strip()
             if(contains_all == "all"):
                 contains_all = True
         else:
@@ -179,7 +185,7 @@ def print_from_conns(conn):
             else:
                 if(contains_all == True):
                     message = data.split('\n')
-                    data = message[1] + '\n' + message[2] + '\n' + message[3]
+                    data = message[1] + '\n' + message[2] + '\n' + message[3] + '\n' + message[4] + '\n' + message[5]
                     print("========Node " + message[0] + "======== ")
                     print(data)
                     print("\n")
@@ -222,6 +228,7 @@ def start_node(port):
     hello = 5
     predecessor_id = 0
     count = 0
+    super_successor = 0
 
     if(port == 5000):
         keys = [x for x in range(256)]
@@ -259,7 +266,12 @@ def start_node(port):
             predecessor_keys = []
             for i in range(2,len(data.split())):
                 predecessor_keys.append(int(data.split()[i]))
+            sock = get_socket(5000 + predecessor_id, finger_table)
             #print(predecessor_keys)
+            sock.sendall("super_successor " + str(finger_table[0][0]) + '\n')
+
+        elif(data.split()[0] == "super_successor"): #super_successor id
+            super_successor = data.split()[1]
 
         elif(data == "crash"): #crash
             #CRASH THE NODE
@@ -286,7 +298,9 @@ def start_node(port):
             line +=  "FingerTable: " + str(temp) + "\n"
             line +=  "Keys: " + str(keys) + "\n"
             #print(predecessor_keys)
-            line += "predecessor_keys: " + str(predecessor_keys)
+            line += "predecessor_keys: " + str(predecessor_keys) + "\n"
+            line += "super_successor: " + str(super_successor) + "\n"
+            line += "predecessor_id: " + str(predecessor_id)
             if("all" in data):
                 line += "\nall"
             #print("sent show from " + str(node_id))
@@ -372,6 +386,45 @@ def start_node(port):
                 #print port
                 sock = get_socket(port, finger_table)
                 sock.sendall(str(new_table) + "\n")
+
+        elif(data == "change successor"):
+            #print finger_table[0]
+            old_id = finger_table[0][0]
+            sock = get_socket(int(super_successor) + 5000, finger_table)
+            for finger in finger_table:
+                if finger[0] == old_id:
+                    finger[0] = int(super_successor)
+                    finger[1].close()
+                    finger[1] = sock
+            send_keys = ""
+            for i in range(len(keys)):
+                send_keys += str(keys[i]) + " "
+            finger_table[0][1].sendall("concatenate " + str(node_id) + " " + str(old_id) + " " + send_keys)
+            sock = get_socket(predecessor_id + 5000, finger_table)
+            sock.sendall("super_successor " + str(finger_table[0][0]))
+
+
+        elif(data.split()[0] == "concatenate"):
+            keys += predecessor_keys
+            keys.sort()
+            predecessor_id = int(data.split()[1])
+            old_id = int(data.split()[2])
+            for finger in finger_table:
+                if finger[0] == old_id:
+                    finger[0] = int(super_successor)
+                    finger[1].close()
+                    finger[1] = sock
+            predecessor_keys = []
+            for i in range(3,len(data.split())):
+                predecessor_keys.append(int(data.split()[i]))
+            sock = get_socket(predecessor_id + 5000, finger_table)
+            sock.sendall("super_successor " + str(finger_table[0][0]))
+            send_keys = ""
+            for i in range(len(keys)):
+                send_keys += str(keys[i]) + " "
+            finger_table[0][1].sendall("predecessor " + str(predecessor_id) + " " + send_keys)
+
+
         else:
             #rint data
             predecessor_keys = []
@@ -426,33 +479,35 @@ def send_heartbeats(successor, node_id):
     successor[1].sendall("heartbeat message start " + time_t + " " + str(node_id))
     while True:
         #print("Node joined - heartbeating started")
-        try:
-            data = successor[1].recv(1024)
-            if not data:
-                print("NODE CRASHED 2")
+        #try:
+        data = successor[1].recv(1024)
+        if not data:
+            print("N" + str(node_id) + "'s Successor Crashed")
+            me = get_socket(5000 + node_id, False)
+            me.sendall("change successor\n")
+            return
+        #print("NODE CRASHED 1")
+        #return
+        if("end heartbeat" in data):
+            #print "enter"
+            #print(str(node_id) + " finished heartbeat to " + str(finger_table[0][0]))
+            #STRING IS 0 -> end 1-> heartbeat 2-> time initially sent from predecssor 3-> time received by successor
+            time_sent_precessor = float(data.split()[2])
+            time_sent_successor = float(data.split()[3])
+            #print(int(time_sent_successor - time_sent_precessor))
+            #if(int(time_sent_successor - time_sent_precessor) == 5):
+            time_t = str(time.time())
+            time.sleep(2.5)
+            try:
+                successor[1].sendall("heartbeat message start " + time_t + " " + str(node_id))
+            except:
                 return
-            #print("NODE CRASHED 1")
-            #return
-            if("end heartbeat" in data):
-                #print "enter"
-                #print(str(node_id) + " finished heartbeat to " + str(finger_table[0][0]))
-                #STRING IS 0 -> end 1-> heartbeat 2-> time initially sent from predecssor 3-> time received by successor
-                time_sent_precessor = float(data.split()[2])
-                time_sent_successor = float(data.split()[3])
-                #print(int(time_sent_successor - time_sent_precessor))
-                #if(int(time_sent_successor - time_sent_precessor) == 5):
-                time_t = str(time.time())
-                time.sleep(2.5)
-                try:
-                    successor[1].sendall("heartbeat message start " + time_t + " " + str(node_id))
-                except:
-                    return
-        except socket.timeout, e:
+        '''except socket.timeout, e:
             err = e.args[0]
             if(err == 'timed out'):
                 print("NODE CRASHED 2")
                 #DO A LOTTA SHIT
-                i = 0
+                i = 0'''
 
 def set_keys(finger_table, predecessor_id, node_id):
     if(predecessor_id > node_id):
@@ -510,7 +565,7 @@ def read_from_conns(conn, q, q2, node_id):
         try:
             data = conn.recv(4096)
         except:
-            print("NODE CRASHED - " + str(node_id))
+            #print("NODE CRASHED - " + str(node_id))
             return
         if("heartbeat" in data):
             i = 0
@@ -538,7 +593,7 @@ def read_from_conns(conn, q, q2, node_id):
                     continue
 
                 else:
-                    #print "Data:",command[:1]
+                    #print "Data:",command
                     q.put(command)
 
 def update_fingers(node_id, new_finger, finger_table):
