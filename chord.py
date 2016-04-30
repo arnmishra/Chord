@@ -25,6 +25,13 @@ def main(config):
     client_thread.start()
     global num_nodes
     num_nodes = 0
+    '''
+    global zero
+    zero = False
+    zero = get_socket(5000, False)
+    while not zero:
+        zero = get_socket(5000, False)
+    '''
     while True:
         time.sleep(1)
 
@@ -188,9 +195,13 @@ def print_from_conns(conn):
 
 def get_socket(port, finger_table):
     '''
+    global zero
+    if int(port) == 5000 and zero:
+        return zero
+
     if finger_table:
         for i in range(8):
-            if finger_table[i][0] == port-5000 and finger_table[i][1] != "self":
+            if int(finger_table[i][0]) == int(port)-5000 and finger_table[i][1] != "self":
                 return finger_table[i][1] #if the socket has already been made, return
     '''
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -226,10 +237,11 @@ def start_node(port):
     s.bind(("127.0.0.1", port))
     s.listen(33) #up to 31 connections from other nodes, 1 from client, and 1 extra to be safe
     q = Queue.Queue()
+    q2 = Queue.Queue()
 
     node_id = port - 5000
 
-    accept_thread = Thread(target = start_accepting, args= (s, q, node_id, conns))
+    accept_thread = Thread(target = start_accepting, args= (s, q, q2, node_id, conns))
     #print "Created accept thread"
     accept_thread.daemon = True
     #print "started accept thread for ", port
@@ -301,6 +313,7 @@ def start_node(port):
             #print "node: " + str(node_id) + " is being updated with " + data.split()[1]
             if(new_finger != node_id):
                 finger_table = update_fingers(node_id, new_finger, finger_table)
+                q2.put(finger_table[0][0])
             #if(finger_table[0][0] == new_finger):
             #send_keys = ""
             #for i in range(len(keys)):
@@ -322,7 +335,7 @@ def start_node(port):
                 nodes_lock.release()
                 finger_table = [[0, "self"] for x in range(8)]
                 client.sendall("P0 Joined\n")
-                heartbeat_thread = Thread(target=send_heartbeats, args=(finger_table, node_id))
+                heartbeat_thread = Thread(target=send_heartbeats, args=(finger_table[0], node_id))
                 heartbeat_thread.daemon = True
                 heartbeat_thread.start()
 
@@ -395,7 +408,7 @@ def start_node(port):
             cond2.release()
             client.sendall("P" + str(node_id) + " Joined" + "\n")
             #Start heartbeat messages
-            heartbeat_thread = Thread(target=send_heartbeats, args=(finger_table, node_id))
+            heartbeat_thread = Thread(target=send_heartbeats, args=(finger_table[0], node_id))
             heartbeat_thread.daemon = True
             heartbeat_thread.start()
         #print("at the bottom")
@@ -403,26 +416,26 @@ def start_node(port):
         #print(hello)
 
 #Send heartbeats to successor
-def send_heartbeats(finger_table, node_id):
+def send_heartbeats(successor, node_id):
     if(num_nodes <= 1):
         with cond2:
             cond2.wait()
-    finger_table[0][1].settimeout(5)
+    successor[1].settimeout(5)
     time_t = str(time.time())
     time.sleep(2.5)
-    finger_table[0][1].sendall("heartbeat message start " + time_t + " " + str(node_id))
+    successor[1].sendall("heartbeat message start " + time_t + " " + str(node_id))
     while True:
-        if node_id == 0:
-            print finger_table[0][0]
         #print("Node joined - heartbeating started")
         try:
-            try:
-                data = finger_table[0][1].recv(1024)
-            except:
-                print("NODE CRASHED 1")
+            data = successor[1].recv(1024)
+            if not data:
+                print("NODE CRASHED 2")
                 return
+            #print("NODE CRASHED 1")
+            #return
             if("end heartbeat" in data):
-                print(str(node_id) + " finished heartbeat to " + str(finger_table[0][0]))
+                #print "enter"
+                #print(str(node_id) + " finished heartbeat to " + str(finger_table[0][0]))
                 #STRING IS 0 -> end 1-> heartbeat 2-> time initially sent from predecssor 3-> time received by successor
                 time_sent_precessor = float(data.split()[2])
                 time_sent_successor = float(data.split()[3])
@@ -431,7 +444,7 @@ def send_heartbeats(finger_table, node_id):
                 time_t = str(time.time())
                 time.sleep(2.5)
                 try:
-                    finger_table[0][1].sendall("heartbeat message start " + time_t + " " + str(node_id))
+                    successor[1].sendall("heartbeat message start " + time_t + " " + str(node_id))
                 except:
                     return
         except socket.timeout, e:
@@ -481,24 +494,23 @@ def find(value, finger_table, node_id):
     #print "value", value
     return finger
 
-def start_accepting(s, q, node_id, conns):
+def start_accepting(s, q, q2, node_id, conns):
     while True:
         conn, addr = s.accept()
         conns.append(conn)
-        read_thread = Thread(target = read_from_conns, args= (conn, q, node_id))
+        read_thread = Thread(target = read_from_conns, args= (conn, q, q2, node_id))
         #print "Created read thread"
         read_thread.daemon = True
         #print "started read thread for "
         read_thread.start()
 
-def read_from_conns(conn, q, node_id):
+def read_from_conns(conn, q, q2, node_id):
     while True:
         #Goes into except if node crashes and connection is closed
         try:
             data = conn.recv(4096)
         except:
             print("NODE CRASHED - " + str(node_id))
-            num_nodes -= 1
             return
         if("heartbeat" in data):
             i = 0
@@ -508,7 +520,13 @@ def read_from_conns(conn, q, node_id):
                 time_received = data.split()[3]
                 #print(str(node_id) + " sent heartbeat back to " + data.split()[4])
                 try:
-                    conn.sendall("end heartbeat " + str(time_received) + " " + str(time.time()))
+                    successor = -1
+                    #print q2.empty()
+                    while not q2.empty():
+                        #print "pull off queue"
+                        successor = q2.get()
+                    conn.sendall("end heartbeat " + str(time_received) + " " + str(time.time()) + " " + str(successor))
+                    #print("here")
                 except:
                     return
             continue
