@@ -169,7 +169,8 @@ def print_from_conns(conn):
     show_all_nodes = Queue.PriorityQueue()
     while True:
         data = conn.recv(4096)
-        node_id = data.split('\n')[0][1:].strip()
+        #print "lol", data
+        #node_id = data.split('\n')[0][1:].strip()
         if(len(data.split('\n')) == 7):
             contains_all = data.split('\n')[6].strip()
             if(contains_all == "all"):
@@ -197,7 +198,7 @@ def print_from_conns(conn):
                     cond.release()
                 else:
                     #i = 0
-                    print(data)
+                    print "data", data
          
             go = 1
 
@@ -292,7 +293,7 @@ def start_node(port):
                 if initial_id != finger_table[0][0]:
                     #print "here", finger_table[0][0]
                     #time.sleep(random.randrange(min_delay, max_delay))
-                    finger_table[0][1].sendall("fix " + str(initial_id) + " " + str(old_id))
+                    finger_table[0][1].sendall("fix " + str(initial_id) + " " + str(old_id) + "\n")
 
         elif(data.split()[0] == "fix"):
             initial_id = int(data.split()[1])
@@ -300,7 +301,7 @@ def start_node(port):
             fix_table(initial_id, finger_table, node_id, old_id)
             if initial_id != finger_table[0][0]:
                 #time.sleep(random.randrange(min_delay, max_delay))
-                finger_table[0][1].sendall("fix " + str(initial_id) + " " + str(old_id))
+                finger_table[0][1].sendall("fix " + str(initial_id) + " " + str(old_id) + "\n")
 
         elif(data.split()[0] == "super_successor"): #super_successor id
             super_successor = data.split()[1]
@@ -363,8 +364,9 @@ def start_node(port):
                 found[1].sendall(data + '\n')
 
         elif(data.split()[0] == "finger"): #finger new_finger keys predecessor_id
-            #print node_id
-            #print data
+            print finger_table
+            print node_id
+            print data
             predecessor_id = int(data.split()[3])
             new_finger = int(data.split()[1])
             #print "node: " + str(node_id) + " is being updated with " + data.split()[1]
@@ -450,10 +452,10 @@ def start_node(port):
             send_keys = ""
             for i in range(len(keys)):
                 send_keys += str(keys[i]) + " "
-            finger_table[0][1].sendall("concatenate " + str(node_id) + " " + str(old_id) + " " + send_keys)
+            finger_table[0][1].sendall("concatenate " + str(node_id) + " " + str(old_id) + " " + send_keys + "\n")
             sock = get_socket(predecessor_id + 5000, finger_table)
             #time.sleep(random.randrange(min_delay, max_delay))
-            sock.sendall("super_successor " + str(finger_table[0][0]))
+            sock.sendall("super_successor " + str(finger_table[0][0]) + "\n")
             #finger_table[0][1].sendall()
 
         #elif(data.split()[0] == )
@@ -471,7 +473,7 @@ def start_node(port):
                 predecessor_keys.append(int(data.split()[i]))
             sock = get_socket(predecessor_id + 5000, finger_table)
             #time.sleep(random.randrange(min_delay, max_delay))
-            sock.sendall("super_successor " + str(finger_table[0][0]))
+            sock.sendall("super_successor " + str(finger_table[0][0]) + "\n")
             send_keys = ""
             for i in range(len(keys)):
                 send_keys += str(keys[i]) + " "
@@ -497,6 +499,8 @@ def start_node(port):
 
                 else:
                     if finger_table[i] != prev:
+                        #print "setting socket1", finger_table[i]
+                        #print "node_id", node_id
                         s = get_socket(int(finger_table[i]) + 5000, finger_table)
                     if not s:
                         print "Could not connect to " + str(finger_table[i])
@@ -557,7 +561,7 @@ def send_heartbeats(successor, node_id):
     time_t = str(time.time())
     time.sleep(2.5)
     #time.sleep(random.randrange(min_delay, max_delay))
-    successor[1].sendall("heartbeat message start " + time_t + " " + str(node_id))
+    successor[1].sendall("heartbeat message start " + time_t + " " + str(node_id) + "\n")
     while True:
         #print("Node joined - heartbeating started")
         #try:
@@ -582,7 +586,7 @@ def send_heartbeats(successor, node_id):
             #time.sleep(2.5)
             try:
                 #time.sleep(random.randrange(min_delay, max_delay))
-                successor[1].sendall("heartbeat message start " + time_t + " " + str(node_id))
+                successor[1].sendall("heartbeat message start " + time_t + " " + str(node_id) + "\n")
             except:
                 return
         '''except socket.timeout, e:
@@ -652,67 +656,63 @@ def read_from_conns(conn, q, q2, node_id):
         #Goes into except if node crashes and connection is closed
         try:
             data = conn.recv(4096)
-            #print "Data", data
+            commands = data.split("\n")
             time.sleep(random.randrange(min_delay, max_delay))
         except:
             #print("NODE CRASHED - " + str(node_id))
             return
-        if("heartbeat" in data):
-            i = 0
-            if("start" in data):
-                #print(str(node_id) + " received heartbeat from " + data.split()[4])
-                #time.sleep(2.5)
-                time_received = data.split()[3]
-                #print(str(node_id) + " sent heartbeat back to " + data.split()[4])
-                try:
-                    successor = -1
-                    #print q2.empty()
-                    while not q2.empty():
-                        #print "pull off queue"
-                        successor = q2.get()
-                    #time.sleep(random.randrange(min_delay, max_delay))
-                    conn.sendall("end heartbeat " + str(time_received) + " " + str(time.time()) + " " + str(successor))
-                    #print("here")
-                except:
-                    return
-            continue
-        else:
-            print data
-            commands = data.split("\n")
-            for command in commands:
-
-                if(command == ""):
-                    continue
-
-                else:
-                    #print "Data:",command
-                    q.put(command)
+        for command in commands:
+            if command == "":
+                continue
+            if("heartbeat" in command):
+                i = 0
+                if("start" in command):
+                    #print(str(node_id) + " received heartbeat from " + data.split()[4])
+                    #time.sleep(2.5)
+                    time_received = command.split()[3]
+                    #print(str(node_id) + " sent heartbeat back to " + data.split()[4])
+                    try:
+                        successor = -1
+                        #print q2.empty()
+                        while not q2.empty():
+                            #print "pull off queue"
+                            successor = q2.get()
+                        conn.sendall("end heartbeat " + str(time_received) + " " + str(time.time()) + " " + str(successor) + "\n")
+                    except:
+                        return
+                continue
+            else:
+                q.put(command)
 
 def update_fingers(node_id, new_finger, finger_table):
-    #global max_delay
-    #global min_delay
-    #print "id",node_id
-    #if new_finger > (node_id + 2**7)%255:
-    #    return finger_table
     s = False
     successor = 1
     for i in range(8):
         if (new_finger < finger_table[i][0] or finger_table[i][0] == 0) and new_finger >= (node_id + 2 ** i)%255:
             #print "str", finger_table
-            finger_table[i][0] = new_finger
-
+            #print "node_id",node_id
+            #print "i",i
+            #print "new", new_finger
+            #finger_table[i][1] = Fa
             if not s:
+                #print finger_table
+                #print "lol",(new_finger+5000)
                 s = get_socket(new_finger + 5000, finger_table)
                 if not s:
                     print "Could not connect to " + str(new_finger)
-
+            finger_table[i][0] = new_finger
+            #print node_id
+            #print new_finger
+            #print finger_table
             finger_table[i][1] = s
+            #s = False
+            #print finger_table
 
         if(finger_table[i][0] != node_id and successor):
-            #if finger_table[len(finger_table)-1][0] == new_finger:
-                #finger_table[len(finger_table)-1][1].sendall("predecessor " + str(node_id) + "\n")
+            #print "node_id",node_id
+            #print "successor",finger_table[i][0]
+            #print finger_table
             if new_finger != node_id:
-                #time.sleep(random.randrange(min_delay, max_delay))
                 finger_table[i][1].sendall("finger " + str(new_finger) + " keys " + str(node_id) + "\n") # Send the finger and key flags to the successor (assuming its not the original node)
             successor = 0
     return finger_table
