@@ -53,6 +53,8 @@ def parse_file(config):
 def client(initial_port):
     global go
     global show_all
+    global crash
+    crash = 0
     show_all = False
     go = 1
     global nodes # hash node_id to the socket
@@ -117,6 +119,7 @@ def client(initial_port):
 
         elif command == "crash": #crash p
             if node_id in nodes:
+                crash = node_id
                 nodes[node_id].sendall("crash\n") #tell the node to crash
                 del nodes[node_id] #remove the node from the list of connections
             else:
@@ -193,8 +196,19 @@ def print_from_conns(conn):
 
 def get_socket(port, finger_table):
     global zero
-    if int(port) == 5000 and zero:
+    global crash
+    if int(port) == 5000 and zero and not crash:
         return zero
+    elif int(port) == 5000 and zero and crash:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.connect(("127.0.0.1", int(port)))
+            zero = s
+            crash = 0
+            return s
+        except:
+            return False
 
     if finger_table:
         for i in range(8):
@@ -279,8 +293,8 @@ def start_node(port):
                     finger[1].close()
                 except:
                     i = 0
-            for conn in conns:
-               conn.close()
+            #for conn in conns:
+               #conn.close()
             client.sendall("P" + str(node_id) + " Crashed\n")
             nodes_lock.acquire()
             num_nodes -= 1
@@ -377,12 +391,13 @@ def start_node(port):
                     sock.sendall(str(new_table) + "\n")
 
         elif(data == "change successor"):
+            print "node", node_id
             old_id = finger_table[0][0]
             sock = get_socket(int(super_successor) + 5000, False)
             for finger in finger_table:
                 if finger[0] == old_id:
                     finger[0] = int(super_successor)
-                    finger[1].close()
+                    #finger[1].close()
                     finger[1] = sock
             send_keys = ""
             for i in range(len(keys)):
@@ -461,6 +476,7 @@ def fix_table(initial_id, finger_table, node_id, old_id):
 
 #Send heartbeats to successor
 def send_heartbeats(successor, node_id):
+    global crash
     if(num_nodes <= 1):
         with cond2:
             cond2.wait()
@@ -473,12 +489,15 @@ def send_heartbeats(successor, node_id):
     while True:
         data = successor[1].recv(1024)
         if not data:
-            print("N" + str(node_id) + "'s Successor Crashed")
-            me = get_socket(5000 + node_id, False)
-            print node_id
-            
-            print "returning1",node_id
-            return
+            #print("N" + str(node_id) + "'s Successor Crashed")
+            if node_id != int(crash):
+                me = get_socket(5000 + node_id, False)
+                print "node", node_id
+                print me
+                me.sendall("change successor\n")
+            else:
+                print "returning1",node_id
+                return
         if("end heartbeat" in data):
             time_t = str(time.time())
             try:
@@ -541,6 +560,10 @@ def read_from_conns(conn, q, q2, node_id):
             if not commands[0] == "join" and not "show" in commands[0]:
                 time.sleep(random.randrange(min_delay, max_delay))
         except:
+            me = get_socket(5000 + node_id, False)
+            print "node", node_id
+            print me
+            me.sendall("change successor\n")
             print "returning4",node_id
             return
         for command in commands:
